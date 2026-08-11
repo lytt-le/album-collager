@@ -15,14 +15,27 @@ To produce a standalone `.exe`, double-click **`build.bat`**. The result lands a
 
 The `Artist - Album` format gives far better matches than a bare album name, but a bare name works too.
 
-**Sources.** Both toggle on/off in the header:
+**Sources.** Four providers, all toggled in Settings. Every enabled source is searched and results are ranked together by how well artist and title match what you typed. The header shows which ones are currently active.
 
-| Source | Typical resolution | Notes |
-| --- | --- | --- |
-| iTunes | 1400–3000 px | Fast, excellent coverage of mainstream releases. No API key. |
-| Cover Art Archive | 500–4000 px | Community scans via MusicBrainz. Better for obscure, indie and vinyl-only releases. Rate-limited to 1 request/second, so it's slower. |
+| Source | Typical resolution | Key | Notes |
+| --- | --- | --- | --- |
+| iTunes | 1400–3000 px | no | Fast, excellent coverage of mainstream releases. |
+| Cover Art Archive | 500–4000 px | no | Community scans via MusicBrainz. Best for obscure, indie and vinyl-only releases. Rate-limited to 1 request/second, so it's slower. |
+| Deezer | up to 1000 px | no | Good catalogue coverage, including plenty iTunes misses. |
+| Spotify | 640 px max | yes | Excellent matching, but the 640 px ceiling is Spotify's, not the app's — small for a large collage, so it works best as a fallback. |
 
-With both enabled the app searches each and ranks results by how well artist and title match your query.
+A note on Deezer: its CDN resizes covers on demand and will happily upscale, so asking for more than 1000 px returns an image that is larger but no more detailed. The app caps it at 1000 px rather than pretend otherwise.
+
+### Spotify setup
+
+Spotify is greyed out in Settings until you give it credentials. They're free:
+
+1. Sign in at [developer.spotify.com/dashboard](https://developer.spotify.com/dashboard) with any Spotify account.
+2. *Create app* — any name and description; the redirect URI can be anything (`http://localhost`) since this app never uses it.
+3. Copy the **Client ID** and **Client secret** into the Spotify row in Settings.
+4. Press *Test connection* to confirm, then Save.
+
+Credentials are stored in plain text in `settings.json`, the same as any local desktop app config. The app uses the client-credentials flow, which only reads public catalogue data — it never touches your account, playlists, or listening history.
 
 **Importing your own art.** *Import image…* in the toolbar adds local files (PNG, JPG, WEBP, TIFF) for anything the sources don't have.
 
@@ -42,6 +55,8 @@ The live preview updates when you press *Refresh preview*. Covers smaller than t
 *Settings* on the right of the toolbar (or Ctrl+,) opens the settings pane.
 
 **Appearance** — switch between **Dark**, **Light**, and **Match system**. The theme previews live as you pick it and reverts if you cancel, so you can judge it by eye. Dialogs that are already open keep their old colours until reopened.
+
+**Sources** — tick the providers to search, see what resolution each one gives you, and enter any API keys. A source that needs a key it doesn't have is greyed out with a note on what to enter. This section also holds the *Add the best match automatically* preference, which mirrors the *Pick cover manually* toggle in the header.
 
 **Storage** — choose where albums are saved. Press *Change…* to pick any folder: an external drive, a synced folder, anywhere you have space. The pane shows how many files you currently have and how much room they take.
 
@@ -70,7 +85,7 @@ main.py                    entry point
 albumcollage/
   config.py                paths, settings, storage relocation
   theme.py                 dark / light / system palettes
-  sources.py               iTunes + MusicBrainz/Cover Art Archive clients
+  sources.py               provider registry: iTunes, Cover Art Archive, Deezer, Spotify
   library.py               album records, cover cache, ordering
   collage.py               Pillow grid renderer
   workers.py               background search/download/export tasks

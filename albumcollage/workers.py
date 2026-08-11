@@ -25,6 +25,7 @@ class _Signals(QObject):
     downloaded = pyqtSignal(object, bytes)
     progress = pyqtSignal(int, int)
     finished_path = pyqtSignal(str)
+    success = pyqtSignal(str)
     finished = pyqtSignal()
 
 
@@ -47,14 +48,16 @@ class BaseTask(QRunnable):
 
 
 class SearchTask(BaseTask):
-    def __init__(self, term: str, source_names: list[str]):
+    def __init__(self, term: str, source_names: list[str], settings: dict):
         super().__init__()
         self.term = term
         self.source_names = source_names
+        self.settings = dict(settings)
 
     def work(self) -> None:
         warnings: list[str] = []
-        found = sources.search(self.term, self.source_names, on_error=warnings.append)
+        found = sources.search(self.term, self.source_names, settings=self.settings,
+                               on_error=warnings.append)
         for message in warnings:
             self.signals.warning.emit(message)
         self.signals.results.emit(self.term, found)
@@ -91,15 +94,19 @@ class DownloadTask(BaseTask):
 class AutoAddTask(BaseTask):
     """Search and download the best match in one go (auto mode)."""
 
-    def __init__(self, term: str, source_names: list[str]):
+    def __init__(self, term: str, source_names: list[str], settings: dict):
         super().__init__()
         self.term = term
         self.source_names = source_names
+        self.settings = dict(settings)
 
     def work(self) -> None:
-        found = sources.search(self.term, self.source_names)
+        warnings: list[str] = []
+        found = sources.search(self.term, self.source_names, settings=self.settings,
+                               on_error=warnings.append)
         if not found:
-            self.signals.error.emit(f'No album art found for "{self.term}".')
+            detail = f" ({warnings[0]})" if warnings else ""
+            self.signals.error.emit(f'No album art found for "{self.term}".{detail}')
             return
         best = found[0]
         try:
@@ -108,6 +115,23 @@ class AutoAddTask(BaseTask):
             self.signals.error.emit(f"{best.label}: {exc}")
             return
         self.signals.downloaded.emit(best, data)
+
+
+class SpotifyCheckTask(BaseTask):
+    """Verify Spotify credentials without freezing the settings dialog."""
+
+    def __init__(self, client_id: str, client_secret: str):
+        super().__init__()
+        self.client_id = client_id
+        self.client_secret = client_secret
+
+    def work(self) -> None:
+        try:
+            sources.check_spotify_credentials(self.client_id, self.client_secret)
+        except Exception as exc:  # noqa: BLE001
+            self.signals.error.emit(str(exc))
+            return
+        self.signals.success.emit("Spotify credentials work.")
 
 
 class ExportTask(BaseTask):

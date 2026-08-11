@@ -10,6 +10,7 @@ Two locations matter and they are deliberately separate:
 
 from __future__ import annotations
 
+import copy
 import json
 import os
 import shutil
@@ -39,7 +40,9 @@ DEFAULT_SETTINGS = {
     "theme": "dark",            # "dark" | "light" | "system"
     "storage_root": "",         # "" = use app_dir()
     "auto_pick": True,          # grab best match without showing the picker
-    "sources": ["itunes", "caa"],
+    "sources": ["itunes", "caa", "deezer"],
+    "spotify_client_id": "",
+    "spotify_client_secret": "",
     "cell_size": 1000,
     "gap": 0,
     "margin": 0,
@@ -55,7 +58,7 @@ def load_settings(refresh: bool = False) -> dict:
     """Return a copy of the current settings, reading from disk on first use."""
     global _cache
     if _cache is None or refresh:
-        merged = dict(DEFAULT_SETTINGS)
+        merged = copy.deepcopy(DEFAULT_SETTINGS)
         try:
             with open(SETTINGS_FILE, "r", encoding="utf-8") as fh:
                 stored = json.load(fh)
@@ -64,13 +67,13 @@ def load_settings(refresh: bool = False) -> dict:
         except (OSError, ValueError):
             pass
         _cache = merged
-    return dict(_cache)
+    return copy.deepcopy(_cache)
 
 
 def save_settings(settings: dict) -> None:
     global _cache
-    merged = dict(DEFAULT_SETTINGS)
-    merged.update(settings)
+    merged = copy.deepcopy(DEFAULT_SETTINGS)
+    merged.update(copy.deepcopy(settings))
     _cache = merged
     try:
         tmp = SETTINGS_FILE.with_suffix(".tmp")
