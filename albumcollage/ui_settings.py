@@ -1,17 +1,20 @@
-"""Settings pane: appearance and where albums are stored on disk."""
+"""Settings pane: appearance, art sources, and where albums are stored on disk."""
 
 from __future__ import annotations
 
 from pathlib import Path
 
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, QUrl
+from PyQt6.QtGui import QDesktopServices
 from PyQt6.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFileDialog,
-    QFormLayout, QGroupBox, QHBoxLayout, QLabel, QLineEdit, QMessageBox,
-    QPushButton, QVBoxLayout, QWidget,
+    QFormLayout, QFrame, QGridLayout, QGroupBox, QHBoxLayout, QLabel, QLineEdit,
+    QMessageBox, QPushButton, QScrollArea, QVBoxLayout, QWidget,
 )
 
-from . import config, theme
+from . import config, sources, theme
+from .ui_dialogs import start_task
+from .workers import SpotifyCheckTask
 
 
 class SettingsDialog(QDialog):
@@ -29,16 +32,28 @@ class SettingsDialog(QDialog):
         self._original_theme = settings.get("theme", "dark")
         self.storage_changed = False
 
-        layout = QVBoxLayout(self)
-        layout.addWidget(self._appearance_group())
-        layout.addWidget(self._storage_group())
-        layout.addStretch(1)
+        body = QWidget()
+        inner = QVBoxLayout(body)
+        inner.setContentsMargins(0, 0, 12, 0)
+        inner.addWidget(self._appearance_group())
+        inner.addWidget(self._sources_group())
+        inner.addWidget(self._storage_group())
+        inner.addStretch(1)
+
+        scroll = QScrollArea()
+        scroll.setWidget(body)
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
 
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel, self)
         buttons.accepted.connect(self._save)
         buttons.rejected.connect(self.reject)
+
+        layout = QVBoxLayout(self)
+        layout.addWidget(scroll, 1)
         layout.addWidget(buttons)
+        self.resize(640, 760)
 
     # -------------------------------------------------------- appearance --- #
     def _appearance_group(self) -> QGroupBox:
@@ -66,6 +81,126 @@ class SettingsDialog(QDialog):
         app = QApplication.instance()
         if app is not None:
             theme.apply_theme(app, self.theme_box.currentData())
+
+    # ----------------------------------------------------------- sources --- #
+    def _sources_group(self) -> QGroupBox:
+        """One row per provider: tick box, what it gives you, and any key it needs."""
+        self.source_checks: dict[str, QCheckBox] = {}
+        self.credential_edits: dict[str, QLineEdit] = {}
+
+        enabled = set(self.settings.get("sources") or [])
+        outer = QVBoxLayout()
+
+        intro = QLabel("Every ticked source is searched, and results are ranked by how "
+                       "well they match what you typed.")
+        intro.setWordWrap(True)
+        outer.addWidget(intro)
+
+        for info in sources.SOURCES:
+            outer.addWidget(self._source_row(info, info.id in enabled))
+
+        self.auto_check = QCheckBox("Add the best match automatically")
+        self.auto_check.setChecked(bool(self.settings.get("auto_pick", True)))
+        self.auto_check.setToolTip(
+            "Ticked: pressing Enter grabs the top-ranked cover straight away.\n"
+            "Unticked: every candidate is shown so you can choose.")
+        outer.addSpacing(6)
+        outer.addWidget(self.auto_check)
+
+        group = QGroupBox("Sources")
+        group.setLayout(outer)
+        return group
+
+    def _source_row(self, info: sources.SourceInfo, checked: bool) -> QWidget:
+        frame = QFrame()
+        frame.setFrameShape(QFrame.Shape.StyledPanel)
+        grid = QGridLayout(frame)
+        grid.setContentsMargins(10, 8, 10, 8)
+
+        box = QCheckBox(f"{info.label}  -  {info.resolution}")
+        box.setChecked(checked)
+        self.source_checks[info.id] = box
+        grid.addWidget(box, 0, 0, 1, 2)
+
+        if info.note:
+            note = QLabel(info.note)
+            note.setWordWrap(True)
+            note.setEnabled(False)
+            grid.addWidget(note, 1, 0, 1, 2)
+
+        row = 2
+        for key, label, secret in info.credentials:
+            edit = QLineEdit(str(self.settings.get(key, "") or ""))
+            edit.setPlaceholderText(f"Paste your {label.lower()} here")
+            if secret:
+                edit.setEchoMode(QLineEdit.EchoMode.Password)
+            edit.textChanged.connect(lambda _t, i=info: self._refresh_source_state(i))
+            self.credential_edits[key] = edit
+            grid.addWidget(QLabel(label), row, 0)
+            grid.addWidget(edit, row, 1)
+            grid.setColumnStretch(1, 1)
+            row += 1
+
+        if info.credentials:
+            hint = QLabel(info.help_text)
+            hint.setWordWrap(True)
+            hint.setEnabled(False)
+            grid.addWidget(hint, row, 0, 1, 2)
+            row += 1
+
+            actions = QHBoxLayout()
+            if info.help_url:
+                get_key = QPushButton("Get a key...")
+                get_key.clicked.connect(
+                    lambda _c=False, url=info.help_url: QDesktopServices.openUrl(QUrl(url)))
+                actions.addWidget(get_key)
+            if info.id == "spotify":
+                test = QPushButton("Test connection")
+                test.clicked.connect(self._test_spotify)
+                actions.addWidget(test)
+            actions.addStretch(1)
+            grid.addLayout(actions, row, 0, 1, 2)
+
+        self._refresh_source_state(info)
+        return frame
+
+    def _current_credentials(self) -> dict:
+        """Settings as they stand in the dialog right now, keys included."""
+        merged = dict(self.settings)
+        for key, edit in self.credential_edits.items():
+            merged[key] = edit.text().strip()
+        return merged
+
+    def _refresh_source_state(self, info: sources.SourceInfo) -> None:
+        """Grey out a source until it has the credentials it needs."""
+        box = self.source_checks.get(info.id)
+        if box is None:
+            return
+        missing = info.missing_credentials(self._current_credentials())
+        if missing:
+            box.setEnabled(False)
+            box.setChecked(False)
+            box.setToolTip("Add " + " and ".join(missing) + " below to enable this source.")
+        else:
+            box.setEnabled(True)
+            box.setToolTip("")
+
+    def _test_spotify(self) -> None:
+        creds = self._current_credentials()
+        client_id = creds.get("spotify_client_id", "")
+        client_secret = creds.get("spotify_client_secret", "")
+        if not client_id or not client_secret:
+            QMessageBox.information(self, "Spotify",
+                                    "Enter both the Client ID and the Client secret first.")
+            return
+        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+        task = SpotifyCheckTask(client_id, client_secret)
+        task.signals.success.connect(
+            lambda msg: QMessageBox.information(self, "Spotify", msg))
+        task.signals.error.connect(
+            lambda msg: QMessageBox.warning(self, "Spotify", msg))
+        task.signals.finished.connect(QApplication.restoreOverrideCursor)
+        start_task(self, task)
 
     # ----------------------------------------------------------- storage --- #
     def _storage_group(self) -> QGroupBox:
@@ -163,7 +298,17 @@ class SettingsDialog(QDialog):
 
     # ------------------------------------------------------------ finish --- #
     def _save(self) -> None:
+        chosen = [info.id for info in sources.SOURCES
+                  if self.source_checks[info.id].isChecked()]
+        if not chosen:
+            QMessageBox.warning(self, "No sources", "Tick at least one source to search.")
+            return
+
         self.settings["theme"] = self.theme_box.currentData()
+        self.settings["sources"] = chosen
+        self.settings["auto_pick"] = self.auto_check.isChecked()
+        for key, edit in self.credential_edits.items():
+            self.settings[key] = edit.text().strip()
         config.save_settings(self.settings)
         self.accept()
 

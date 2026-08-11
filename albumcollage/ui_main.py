@@ -18,7 +18,7 @@ from PyQt6.QtWidgets import (
 from . import __version__
 from .config import load_settings, save_settings, storage_is_available, storage_root
 from .library import Album, Library
-from .sources import Candidate
+from .sources import Candidate, available_sources, source_label
 from .ui_dialogs import CandidatePicker, CollageDialog, placeholder_icon
 from .ui_settings import SettingsDialog
 from .workers import AutoAddTask, DownloadTask, SearchTask
@@ -77,20 +77,17 @@ class MainWindow(QMainWindow):
             "Off: grab the best match instantly.\nOn: show every candidate and choose.")
         self.manual_check.toggled.connect(self._save_mode)
 
-        self.itunes_check = QCheckBox("iTunes")
-        self.itunes_check.setChecked("itunes" in self.settings.get("sources", []))
-        self.caa_check = QCheckBox("Cover Art Archive")
-        self.caa_check.setChecked("caa" in self.settings.get("sources", []))
-        for box in (self.itunes_check, self.caa_check):
-            box.toggled.connect(self._save_mode)
+        self.sources_label = QLabel()
+        self.sources_label.setToolTip("Choose which services to search in Settings.")
+        self.sources_label.setEnabled(False)
 
         top = QHBoxLayout()
         top.addWidget(self.search_box, 1)
         top.addWidget(add_button)
         top.addWidget(self.manual_check)
-        top.addWidget(QLabel("|"))
-        top.addWidget(self.itunes_check)
-        top.addWidget(self.caa_check)
+
+        under = QHBoxLayout()
+        under.addWidget(self.sources_label, 1)
 
         self.grid = QListWidget()
         self.grid.setViewMode(QListView.ViewMode.IconMode)
@@ -110,11 +107,13 @@ class MainWindow(QMainWindow):
         central = QWidget()
         layout = QVBoxLayout(central)
         layout.addLayout(top)
+        layout.addLayout(under)
         layout.addWidget(self.grid, 1)
         self.setCentralWidget(central)
 
         self._build_toolbar()
         self.status = self.statusBar()
+        self._refresh_sources_label()
         self._update_status()
 
     def _build_toolbar(self) -> None:
@@ -172,16 +171,19 @@ class MainWindow(QMainWindow):
         QThreadPool.globalInstance().start(task)
 
     def _enabled_sources(self) -> list[str]:
-        chosen = []
-        if self.itunes_check.isChecked():
-            chosen.append("itunes")
-        if self.caa_check.isChecked():
-            chosen.append("caa")
-        return chosen or ["itunes"]
+        """Sources the user ticked that also have the credentials they need."""
+        return available_sources(self.settings) or ["itunes"]
+
+    def _refresh_sources_label(self) -> None:
+        active = self._enabled_sources()
+        names = ", ".join(source_label(s) for s in active)
+        skipped = [s for s in (self.settings.get("sources") or []) if s not in active]
+        if skipped:
+            names += f"   (skipping {', '.join(source_label(s) for s in skipped)} - no API key)"
+        self.sources_label.setText(f"Searching: {names}")
 
     def _save_mode(self) -> None:
         self.settings["auto_pick"] = not self.manual_check.isChecked()
-        self.settings["sources"] = self._enabled_sources()
         save_settings(self.settings)
 
     def _reload_grid(self) -> None:
@@ -227,12 +229,12 @@ class MainWindow(QMainWindow):
         self._update_status()
 
         if self.manual_check.isChecked():
-            task = SearchTask(term, self._enabled_sources())
+            task = SearchTask(term, self._enabled_sources(), self.settings)
             task.signals.results.connect(self._show_picker)
             task.signals.warning.connect(lambda m: self.status.showMessage(m, 6000))
             task.signals.error.connect(self._task_failed)
         else:
-            task = AutoAddTask(term, self._enabled_sources())
+            task = AutoAddTask(term, self._enabled_sources(), self.settings)
             task.signals.downloaded.connect(self._store_download)
             task.signals.error.connect(self._task_failed)
         self._start(task)
@@ -339,15 +341,9 @@ class MainWindow(QMainWindow):
     def _sync_controls(self) -> None:
         """Push settings back onto the header controls after an external change."""
         self.manual_check.blockSignals(True)
-        self.itunes_check.blockSignals(True)
-        self.caa_check.blockSignals(True)
         self.manual_check.setChecked(not self.settings.get("auto_pick", True))
-        sources = self.settings.get("sources", [])
-        self.itunes_check.setChecked("itunes" in sources)
-        self.caa_check.setChecked("caa" in sources)
         self.manual_check.blockSignals(False)
-        self.itunes_check.blockSignals(False)
-        self.caa_check.blockSignals(False)
+        self._refresh_sources_label()
 
     # ----------------------------------------------------------- collage --- #
     def open_collage_dialog(self) -> None:
